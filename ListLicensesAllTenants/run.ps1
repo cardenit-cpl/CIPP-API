@@ -7,6 +7,8 @@ Write-Host "PowerShell queue trigger function processed work item: $QueueItem"
 $RawGraphRequest = Get-Tenants | ForEach-Object -Parallel { 
     $domainName = $_.defaultDomainName
     Import-Module '.\GraphHelper.psm1'
+    Import-Module '.\Modules\AzBobbyTables'
+
     try {
         $Licrequest = New-GraphGetRequest -uri 'https://graph.microsoft.com/beta/subscribedSkus' -tenantid $_.defaultDomainName -ErrorAction Stop
         [PSCustomObject]@{
@@ -29,11 +31,13 @@ $RawGraphRequest = Get-Tenants | ForEach-Object -Parallel {
 Set-Location (Get-Item $PSScriptRoot).Parent.FullName
 $ConvertTable = Import-Csv Conversiontable.csv
 $Table = Get-CIPPTable -TableName cachelicenses
-
+$LicenseTable = Get-CIPPTable -TableName ExcludedLicenses
+$ExcludedSkuList = Get-AzDataTableEntity @LicenseTable
 
 $GraphRequest = foreach ($singlereq in $RawGraphRequest) {
     $skuid = $singlereq.Licenses
     foreach ($sku in $skuid) {
+        if ($sku.skuId -in $ExcludedSkuList.GUID) { continue }
         $PrettyName = ($ConvertTable | Where-Object { $_.guid -eq $sku.skuid }).'Product_Display_Name' | Select-Object -Last 1
         if (!$PrettyName) { $PrettyName = $sku.skuPartNumber }
         @{

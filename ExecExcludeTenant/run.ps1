@@ -8,29 +8,34 @@ Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -m
 Write-Host 'PowerShell HTTP trigger function processed a request.'
 $user = $request.headers.'x-ms-client-principal'
 $username = ([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($user)) | ConvertFrom-Json).userDetails
-$date = (Get-Date).tostring('dd-MM-yyyy')
+$date = (Get-Date).tostring('yyyy-MM-dd')
 $TenantsTable = Get-CippTable -tablename Tenants
+
+if ($Request.Query.List) {
+    $ExcludedFilter = "PartitionKey eq 'Tenants' and Excluded eq true" 
+    $ExcludedTenants = Get-AzDataTableEntity @TenantsTable -Filter $ExcludedFilter 
+    Write-LogMessage -API $APINAME -user $request.headers.'x-ms-client-principal' -message 'got excluded tenants list' -Sev 'Info'
+    $body = @($ExcludedTenants)
+}
+elseif ($Request.query.ListAll) {
+    $ExcludedTenants = Get-AzDataTableEntity @TenantsTable -filter "PartitionKey eq 'Tenants'" 
+    Write-LogMessage -API $APINAME -user $request.headers.'x-ms-client-principal' -message 'got excluded tenants list' -Sev 'Info'
+    $body = @($ExcludedTenants)
+}
 try {
-    if ($Request.Query.List) {
-        $ExcludedFilter = "PartitionKey eq 'Tenants' and Excluded eq true" 
-        $ExcludedTenants = Get-AzDataTableRow @TenantsTable -Filter $ExcludedFilter | Select-Object @{name = 'Name'; expression = { $_.defaultDomainName } }, @{name = 'User'; expression = { $_.ExcludeUser } }, @{name = 'Date'; expression = { $_.ExcludeDate } } 
-        #$ExcludedTenants = [System.IO.File]::ReadAllLines("ExcludedTenants") | ConvertFrom-Csv -Delimiter "|" -Header "Name", "User", "Date" | Where-Object { $_.name -ne "" } 
-        Write-LogMessage -API $APINAME -user $request.headers.'x-ms-client-principal' -message 'got excluded tenants list' -Sev 'Info'
-        $body = $ExcludedTenants
-    }
     # Interact with query parameters or the body of the request.
     $name = $Request.Query.TenantFilter
     if ($Request.Query.AddExclusion) {
-        Write-Host ($Request.body.value | ConvertTo-Json)
-        $Tenants = Get-Tenants | Where-Object { $Request.body.value -contains $_.customerId }
-        Write-Host ($Tenants | ConvertTo-Json)
+        $Tenants = Get-Tenants -IncludeAll | Where-Object { $Request.body.value -contains $_.customerId }
+       
         $Excluded = foreach ($Tenant in $Tenants) {
             $Tenant.Excluded = $true
             $Tenant.ExcludeUser = $username
             $Tenant.ExcludeDate = $date
             $Tenant
         }
-        Update-AzDataTableEntity @TenantsTable -Entity $Excluded
+        Write-Host ($Excluded | ConvertTo-Json)
+        Update-AzDataTableEntity @TenantsTable -Entity ([pscustomobject]$Excluded)
         #Remove-CIPPCache
         Write-LogMessage -API $APINAME -tenant $($name) -user $request.headers.'x-ms-client-principal' -message "Added exclusion for customer(s): $($Excluded.defaultDomainName -join ',')" -Sev 'Info' 
         $body = [pscustomobject]@{'Results' = "Success. Added exclusions for customer(s): $($Excluded.defaultDomainName -join ',')" }
@@ -52,6 +57,7 @@ catch {
     Write-LogMessage -API $APINAME -tenant $($name) -user $request.headers.'x-ms-client-principal' -message "Exclusion API failed. $($_.Exception.Message)" -Sev 'Error'
     $body = [pscustomobject]@{'Results' = "Failed. $($_.Exception.Message)" }
 }
+if (!$body) { $body = @() }
 
 # Associate values to output bindings by calling 'Push-OutputBinding'.
 Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
